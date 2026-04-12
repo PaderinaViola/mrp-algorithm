@@ -1,48 +1,118 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import math
 
-st.title("MRP algorithm")
+st.set_page_config(page_title="MRP Calculator", layout="wide")
+st.title("3-Level MRP Calculator")
+
+#params
+st.subheader("Parameters for the scented candle in glass jar")
+cols = st.columns(4)
+
+labels = ["End Product", "Glass jars (L1)", "Candle fills (L1)", "Wax (L2)"]
+for i, (col, label) in enumerate(zip(cols, labels)):
+    col.markdown(f"**{label}**")
+
+prod_lead_time = cols[0].number_input("Lead Time", value=1, min_value=0, key="plt")
+
+jar_lot      = cols[1].number_input("Lot Size",    value=60,  min_value=1, key="tlot")
+jar_lt       = cols[1].number_input("Lead Time",   value=2,   min_value=0, key="tlt")
+jar_onhand   = cols[1].number_input("On Hand",     value=20,  min_value=0, key="toh")
+jar_sr_w1    = cols[1].number_input("Scheduled Receipts", value=0, min_value=0, key="tsr")
+
+fill_lot        = cols[2].number_input("Lot Size",       value=100, min_value=1, key="llot")
+fill_lt         = cols[2].number_input("Lead Time",      value=2,   min_value=0, key="llt")
+fill_onhand     = cols[2].number_input("On Hand",        value=15,  min_value=0, key="loh")
+fill_sr_w1      = cols[2].number_input("Scheduled Receipts", value=0, min_value=0, key="lsr")
+
+wax_lot    = cols[3].number_input("Lot Size",            value=150, min_value=1, key="plot")
+wax_lt     = cols[3].number_input("Lead Time",           value=1,  min_value=0, key="plt2")
+wax_onhand = cols[3].number_input("On Hand",             value=40, min_value=0, key="poh")
+wax_sr_w1  = cols[3].number_input("Scheduled Receipts", value=0, min_value=0, key="psr")
+
+#Mrp
+def calculate_mrp(gross_req, sched_receipts, on_hand, lead_time, lot_size):
+    n = len(gross_req)
+    pab = np.zeros(n, dtype=int)
+    net_req = np.zeros(n, dtype=int)
+    plan_receipts = np.zeros(n, dtype=int)
+    plan_releases = np.zeros(n, dtype=int)
+    inventory = on_hand
+
+    for i in range(n):
+        nr = gross_req[i] - inventory - sched_receipts[i]
+        if nr > 0:
+            net_req[i] = nr
+            plan_receipts[i] = math.ceil(nr / lot_size) * lot_size
+        inventory = inventory + sched_receipts[i] + plan_receipts[i] - gross_req[i]
+        pab[i] = inventory
+        if plan_receipts[i] > 0:
+            rel = i - lead_time
+            if rel >= 0:
+                plan_releases[rel] = plan_receipts[i]
+            else:
+                st.warning(f"Past due order! Needed {abs(rel)} week(s) before period {i+1}.")
+
+    df = pd.DataFrame({
+        "Gross requirements":          gross_req,
+        "Scheduled receipts":          sched_receipts,
+        "Projected ending inventory":  pab,
+        "Net requirements":            net_req,
+        "Planned order releases":      plan_releases,
+        "Planned order receipts":      plan_receipts,
+
+    }, index=pd.RangeIndex(1, n+1)).T.replace(0, "") #flip the table from horizontal to vertical
+
+    return df, plan_releases
+
+#MPS
+st.divider()
+st.subheader("Master Production Schedule (MPS)")
 
 
-if "input_df" not in st.session_state:
-    st.session_state.input_df = pd.DataFrame([
-        {"week": "Forecasted demand", "1":0, "2":5, "3":6, "4":6, "5":0, "6":6, "7":0, "8":6, "9":6, "10":6},
-        {"week": "Production", "1":0, "2":5, "3":6, "4":6, "5":0, "6":6, "7":0, "8":6, "9":6, "10":6},
-        {"week": "Projected on hand", "1":0, "2":5, "3":6, "4":6, "5":0, "6":6, "7":0, "8":6, "9":6, "10":6},
-        {"week": "Lead time = 1, On hand = 2 ", "1":0, "2":0, "3":0, "4":0, "5":0, "6":0, "7":0, "8":0, "9":0, "10":0 },
-    ])
+default_mps = pd.DataFrame(
+    [[0,0,0,0,60,0,80,0,0,0], [0,0,0,0,60,0,70,0,0,0]],
+    columns=[str(i) for i in range(1, 11)],
+    index=["Forecasted demand", "Production"]
+)
+mps = st.data_editor(default_mps, use_container_width=True)
 
-if "output_df" not in st.session_state:
-    st.session_state.output_df = pd.DataFrame(
-        np.zeros((3, 3)), 
-        columns=["Result A", "Result B", "Result C"]
-    )
+#button func
+st.divider()
+if not st.button("Calculate MRP Tables", type="primary", use_container_width=True):
+    st.stop()
 
+production = mps.loc["Production"].astype(int).values
 
-st.subheader("Enter the values in MPS(sample data is provided)")
-edited_input = st.data_editor(st.session_state.input_df, key="input_editor")
+#end product planned order releases
+end_por = np.zeros(10, dtype=int)
+for i, qty in enumerate(production):
+    if qty > 0 and (i - prod_lead_time) >= 0:
+        end_por[i - prod_lead_time] += qty
 
+#level 1
+cols2 = st.columns(2)
 
-if st.button("Count"):
-    new_output = st.session_state.output_df.copy()
-    
-    #  Row 1, Column 1 of the second table = Row 2, Column 1 of the first table * 10
+cols2[0].subheader("Level 1: Glass jars")
+cols2[0].caption(f"Lot size = {jar_lot} | Lead time = {jar_lt} | On hand = {jar_onhand}")
+jar_sr = np.zeros(10, dtype=int)
+jar_sr[0] = jar_sr_w1
+jar_df, jar_releases = calculate_mrp(end_por, np.zeros(10, dtype=int), jar_onhand, jar_lt, jar_lot)
+cols2[0].dataframe(jar_df, use_container_width=True)
 
-    
-    try:
-        val_to_multiply = edited_input.iloc[1, 0] # Row 2, Col 1
-        new_output.iloc[0, 0] = val_to_multiply * 10
-        
-        # other connections
-        new_output.iloc[1, 1] = edited_input.iloc[0, 2] * 5 # R2C2 = R1C3 * 5
-        
-        st.session_state.output_df = new_output
-        st.success("sucess")
-    except IndexError:
-        st.error("error")
+cols2[1].subheader("Level 1: Candle fills")
+cols2[1].caption(f"Lot size = {fill_lot} | Lead time = {fill_lt} | On hand = {fill_onhand} ")
+fill_sr = np.zeros(10, dtype=int)
+fill_sr[0] = fill_sr_w1
+fill_df, fill_releases = calculate_mrp(end_por, np.zeros(10, dtype=int), fill_onhand, fill_lt, fill_lot)
+cols2[1].dataframe(fill_df, use_container_width=True)
 
-#result
-st.subheader("MRS candle wax")
-st.dataframe(st.session_state.output_df)
-
+#level 2
+st.divider()
+st.subheader("Level 2: Wax")
+st.caption(f"Lot size = {wax_lot} | Lead time = {wax_lt} | On hand = {wax_onhand}")
+wax_sr = np.zeros(10, dtype=int)
+wax_sr[0] = wax_sr_w1
+wax_df, _ = calculate_mrp(fill_releases, wax_sr, wax_onhand, wax_lt, wax_lot)
+st.dataframe(wax_df, use_container_width=True)
