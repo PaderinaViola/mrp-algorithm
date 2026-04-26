@@ -51,6 +51,7 @@ fill_sr = sr_input(sr_cols[1], "Candle fills", "fill")
 wax_sr  = sr_input(sr_cols[2], "Wax",          "wax")
 
 # --- MRP FUNCTION ---
+
 def calculate_mrp(gross_req, sched_receipts, on_hand, lead_time, lot_size):
     n = len(gross_req)
     pab           = np.zeros(n, dtype=int)
@@ -65,11 +66,12 @@ def calculate_mrp(gross_req, sched_receipts, on_hand, lead_time, lot_size):
             net_req[i] = nr
             receipt = math.ceil(nr / lot_size) * lot_size
             rel = i - lead_time
+            # If there is enough lead time, schedule it.
+            # If not (rel < 0), it won't be scheduled, creating a negative inventory shortage!
             if rel >= 0:
                 plan_receipts[i] = receipt
                 plan_releases[rel] += receipt
-            else:
-                st.warning(f"Past due order! Needed {abs(rel)} week(s) before period {i+1}.")
+                
         inventory = inventory + sched_receipts[i] + plan_receipts[i] - gross_req[i]
         pab[i] = inventory
 
@@ -107,10 +109,18 @@ if not st.button("Calculate MRP Tables", type="primary", use_container_width=Tru
 production = mps.loc["Production"].astype(int).values
 
 # Fix 3: MPS on-hand row
-st.subheader("MPS — On Hand Inventory")
-mps_onhand = np.maximum(0, mps_onhand_start - np.cumsum(production))
+st.subheader("MPS - On Hand Inventory")
+demand = mps.loc["Forecasted demand"].astype(int).values
+
+# Calculate true projected on-hand (allowing negatives)
+mps_onhand = np.zeros(10, dtype=int)
+current_oh = mps_onhand_start
+for i in range(10):
+    current_oh = current_oh + production[i] - demand[i]
+    mps_onhand[i] = current_oh
+
 mps_oh_df = pd.DataFrame(
-    [mps.loc["Forecasted demand"].values, production, mps_onhand],
+    [demand, production, mps_onhand],
     columns=[str(i) for i in range(1, 11)],
     index=["Forecasted demand", "Production", "On hand"]
 )
